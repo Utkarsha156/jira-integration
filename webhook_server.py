@@ -1,16 +1,13 @@
-# ==============================================================================
-# webhook_server.py
-# ==============================================================================
 import os
 import psycopg2
-import requests # Added to make API calls back to Jira
-import base64   # Added for auth
-import traceback # Added to handle error tracebacks
+import requests
+import base64
 from flask import Flask, request, jsonify
+import traceback
 
 app = Flask(__name__)
 
-# --- Jira Configuration for API calls from the webhook ---
+# --- Configuration using Environment Variables (SECURE METHOD) ---
 JIRA_CONFIG = {
     'base_url': os.environ.get('JIRA_BASE_URL', 'https://utkarsha1564.atlassian.net'),
     'email': os.environ.get('JIRA_EMAIL'),
@@ -18,7 +15,7 @@ JIRA_CONFIG = {
 }
 
 # ==============================================================================
-# DatabaseManager Class (UPDATED with cascading delete)
+# DatabaseManager Class (with all methods)
 # ==============================================================================
 class DatabaseManager:
     """A simple connection manager for the webhook."""
@@ -41,7 +38,7 @@ class DatabaseManager:
             self.conn.close()
 
     def update_mapping_timestamp(self, jira_key):
-        """Updates the updated_at timestamp for a given mapping to IST."""
+        """Silently updates the updated_at timestamp for a given mapping to IST."""
         with self as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -49,13 +46,12 @@ class DatabaseManager:
                     (jira_key,)
                 )
                 conn.commit()
-                print(f"  -> DB Record Updated: Timestamp for {jira_key} refreshed to IST.")
 
     def delete_mapping(self, jira_keys_to_delete):
         """Deletes one or more mapping records from the database."""
+        if not jira_keys_to_delete: return
         with self as conn:
             with conn.cursor() as cur:
-                # Use tuple to correctly format for SQL IN clause
                 cur.execute(
                     "DELETE FROM jira_cloobot_mapping WHERE jira_issue_key IN %s",
                     (tuple(jira_keys_to_delete),)
@@ -63,9 +59,24 @@ class DatabaseManager:
                 conn.commit()
                 deleted_keys_str = ", ".join(jira_keys_to_delete)
                 print(f"  -> DB Records Deleted: Mappings for {deleted_keys_str} deleted.")
+    
+    def insert_mapping(self, cloobot_item_id, jira_issue_id, jira_issue_key):
+        """Inserts a new mapping record into the database."""
+        with self as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO jira_cloobot_mapping (cloobot_item_id, jira_issue_id, jira_issue_key)
+                    VALUES (%s, %s, %s) ON CONFLICT (jira_issue_key) DO NOTHING;
+                    """,
+                    (str(cloobot_item_id), str(jira_issue_id), str(jira_issue_key))
+                )
+                conn.commit()
+                print(f"  -> DB Record Inserted: Cloobot ID {cloobot_item_id} -> Jira Key {jira_issue_key}")
+
 
 # ==============================================================================
-# Webhook Endpoint (UPDATED with improved logic)
+# Webhook Endpoint with Final Logic
 # ==============================================================================
 @app.route('/webhook/jira', methods=['POST'])
 def jira_webhook():
@@ -83,8 +94,18 @@ def jira_webhook():
     db_manager = DatabaseManager()
 
     try:
-        if event_type == 'jira:issue_updated':
-            # Handle renames and other updates
+        if not all([JIRA_CONFIG['email'], JIRA_CONFIG['api_token'], db_manager.conn_string]):
+             print("❌ FATAL: Server environment variables (JIRA_EMAIL, JIRA_API_TOKEN, DATABASE_URL) are not set.")
+             return jsonify({"status": "error", "message": "Server configuration missing"}), 500
+
+        if event_type == 'jira:issue_created':
+            jira_issue_id = issue_data.get('id')
+            # Create a placeholder Cloobot ID since this didn't originate from Cloobot
+            cloobot_id_placeholder = f"JIRA_CREATED_{jira_key}"
+            db_manager.insert_mapping(cloobot_id_placeholder, jira_issue_id, jira_key)
+            print(f"  -> New issue created in Jira. Added to mapping table.")
+
+        elif event_type == 'jira:issue_updated':
             db_manager.update_mapping_timestamp(jira_key)
             changelog = data.get('changelog', {})
             if changelog and 'items' in changelog:
@@ -95,17 +116,15 @@ def jira_webhook():
 
         elif event_type == 'jira:issue_deleted':
             issue_type = issue_data.get('fields', {}).get('issuetype', {}).get('name', '')
-            keys_to_delete = [jira_key] # Start with the issue that was deleted
+            keys_to_delete = [jira_key]
 
-            # **FIX**: If an Epic is deleted, find all its children and delete them too
             if issue_type.lower() == 'epic':
-                print(f"  -> Epic {jira_key} deleted. Finding all child issues to delete from mapping...")
+                print(f"  -> Epic {jira_key} deleted. Finding all child issues to also delete from mapping...")
                 auth_string = f"{JIRA_CONFIG['email']}:{JIRA_CONFIG['api_token']}"
                 auth_b64 = base64.b64encode(auth_string.encode('ascii')).decode('ascii')
                 headers = {'Authorization': f'Basic {auth_b64}', 'Content-Type': 'application/json'}
                 
-                # JQL to find all issues in the deleted Epic
-                jql = f'"Epic Link" = {jira_key}'
+                jql = f'parent = "{jira_key}"'
                 search_url = f"{JIRA_CONFIG['base_url']}/rest/api/3/search"
                 response = requests.post(search_url, headers=headers, json={"jql": jql, "fields": ["key"]})
                 
@@ -116,7 +135,7 @@ def jira_webhook():
                         print(f"  -> Found child issues: {', '.join(child_keys)}")
                         keys_to_delete.extend(child_keys)
                 else:
-                    print(f"  -> WARNING: Could not fetch child issues for deleted epic. API responded with {response.status_code}")
+                    print(f"  -> WARNING: Could not fetch child issues. API responded with {response.status_code}: {response.text}")
 
             db_manager.delete_mapping(keys_to_delete)
             print(f"Simulating deletion in Cloobot...")
