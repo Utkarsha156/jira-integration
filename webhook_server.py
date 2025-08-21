@@ -7,16 +7,14 @@ import traceback
 
 app = Flask(__name__)
 
-# --- Configuration using Environment Variables (SECURE METHOD) ---
+
 JIRA_CONFIG = {
-    'base_url': os.environ.get('JIRA_BASE_URL', 'https://utkarsha1564.atlassian.net'),
+    'base_url': os.environ.get('JIRA_BASE_URL'),
     'email': os.environ.get('JIRA_EMAIL'),
     'api_token': os.environ.get('JIRA_API_TOKEN'),
 }
 
-# ==============================================================================
-# DatabaseManager Class (with all methods)
-# ==============================================================================
+
 class DatabaseManager:
     """A simple connection manager for the webhook."""
     def __init__(self):
@@ -30,7 +28,7 @@ class DatabaseManager:
             self.conn = psycopg2.connect(self.conn_string)
             return self.conn
         except psycopg2.OperationalError as e:
-            print(f"❌ Error connecting to database: {e}")
+            print(f"Error connecting to database: {e}")
             raise
     
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -75,9 +73,7 @@ class DatabaseManager:
                 print(f"  -> DB Record Inserted: Cloobot ID {cloobot_item_id} -> Jira Key {jira_issue_key}")
 
 
-# ==============================================================================
-# Webhook Endpoint with Final Logic
-# ==============================================================================
+
 @app.route('/webhook/jira', methods=['POST'])
 def jira_webhook():
     print("\n--- Webhook Received from Jira ---")
@@ -95,12 +91,12 @@ def jira_webhook():
 
     try:
         if not all([JIRA_CONFIG['email'], JIRA_CONFIG['api_token'], db_manager.conn_string]):
-             print("❌ FATAL: Server environment variables (JIRA_EMAIL, JIRA_API_TOKEN, DATABASE_URL) are not set.")
+             print("FATAL: Server environment variables (JIRA_EMAIL, JIRA_API_TOKEN, DATABASE_URL) are not set.")
              return jsonify({"status": "error", "message": "Server configuration missing"}), 500
 
         if event_type == 'jira:issue_created':
             jira_issue_id = issue_data.get('id')
-            # Create a placeholder Cloobot ID since this didn't originate from Cloobot
+           
             cloobot_id_placeholder = f"JIRA_CREATED_{jira_key}"
             db_manager.insert_mapping(cloobot_id_placeholder, jira_issue_id, jira_key)
             print(f"  -> New issue created in Jira. Added to mapping table.")
@@ -143,11 +139,11 @@ def jira_webhook():
         return jsonify({"status": "ok", "message": "Webhook processed"})
 
     except Exception as e:
-        print(f"❌ Error processing webhook: {e}")
+        print(f"Error processing webhook: {e}")
         traceback.print_exc()
         return jsonify({"status": "error", "message": "Internal Server Error"}), 500
 
-# This part is for running the server
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
