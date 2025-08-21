@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # ==============================================================================
-# 1. DatabaseManager Class (UPDATED with delete and update methods)
+# 1. DatabaseManager Class (UPDATED with IST timestamp and log message)
 # ==============================================================================
 class DatabaseManager:
     """A simple connection manager for the webhook."""
@@ -27,19 +27,18 @@ class DatabaseManager:
         if self.conn:
             self.conn.close()
 
-    # NEW METHOD
     def update_mapping_timestamp(self, jira_key):
-        """Updates the updated_at timestamp for a given mapping."""
+        """Updates the updated_at timestamp for a given mapping to IST."""
         with self as conn:
             with conn.cursor() as cur:
+                # MODIFIED: Explicitly sets the timestamp to the 'Asia/Kolkata' time zone.
                 cur.execute(
-                    "UPDATE jira_cloobot_mapping SET updated_at = NOW() WHERE jira_issue_key = %s",
+                    "UPDATE jira_cloobot_mapping SET updated_at = NOW() AT TIME ZONE 'Asia/Kolkata' WHERE jira_issue_key = %s",
                     (jira_key,)
                 )
                 conn.commit()
-                print(f"  -> DB Record Updated: Timestamp for {jira_key} refreshed.")
+                print(f"  -> DB Record Updated: Timestamp for {jira_key} refreshed to IST.")
 
-    # NEW METHOD
     def delete_mapping(self, jira_key):
         """Deletes a mapping record from the database."""
         with self as conn:
@@ -49,11 +48,12 @@ class DatabaseManager:
                     (jira_key,)
                 )
                 conn.commit()
-                print(f"  -> DB Record Deleted: Mapping for {jira_key} removed.")
+                # MODIFIED: Changed "removed" to "deleted"
+                print(f"  -> DB Record Deleted: Mapping for {jira_key} deleted.")
 
 
 # ==============================================================================
-# 2. Webhook Endpoint (UPDATED to call new database methods)
+# 2. Webhook Endpoint (No changes needed here, logic is in DatabaseManager)
 # ==============================================================================
 @app.route('/webhook/jira', methods=['POST'])
 def jira_webhook():
@@ -72,7 +72,6 @@ def jira_webhook():
     try:
         db_manager = DatabaseManager()
         
-        # Check if the mapping exists first
         with db_manager as conn:
             with conn.cursor() as cur:
                 cur.execute('SELECT cloobot_item_id FROM jira_cloobot_mapping WHERE jira_issue_key = %s', (jira_key,))
@@ -85,17 +84,12 @@ def jira_webhook():
         cloobot_id = mapping_result[0]
         print(f"Found corresponding Cloobot ID: {cloobot_id}")
 
-        # --- Logic to Update/Delete based on Event Type ---
         if event_type == 'jira:issue_updated':
-            # 1. Update the timestamp in your mapping table
             db_manager.update_mapping_timestamp(jira_key)
-            # 2. TODO: Add logic to update the item in Cloobot's system
             print(f"Simulating update to Cloobot item {cloobot_id}...")
 
         elif event_type == 'jira:issue_deleted':
-            # 1. Delete the record from your mapping table
             db_manager.delete_mapping(jira_key)
-            # 2. TODO: Add logic to delete/archive the item in Cloobot's system
             print(f"Simulating deletion of Cloobot item {cloobot_id}...")
         
         else:
